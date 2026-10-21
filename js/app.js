@@ -1,11 +1,12 @@
 // TFO Planner app: state, saving, and the screens.
 import * as C from './calc.js';
-import { conf, load, save, readCache, writeCache, DEFAULT_URL } from './api.js';
+import { conf, load, save, readCache, writeCache, DEFAULT_URL, people } from './api.js';
 import { makeSample } from './sample.js';
 import { pickBtn, openPicker, closePicker, pickerOpen, matches } from './picker.js';
+import * as MS from './masters.js';
 
 const PTABS = ['PlannerLooms', 'PlannerChangeovers', 'PlannerBeamStock', 'PlannerYarnStock', 'PlannerReceipts', 'PlannerTfoSides', 'PlannerSettings', 'PlannerProduction'];
-// The first ten have number keys 1-9 and 0. Masters are read-only and have none.
+// The first ten have number keys 1-9 and 0. The two masters have none.
 const SCREENS = [
   ['looms', 'Looms'], ['production', 'Production'], ['running', 'Running today'], ['changeover', 'Machine changeover'], ['yarn', 'Yarn requirement'],
   ['beams', 'Beam stock'], ['ystock', 'Yarn stock'], ['receipts', 'Receipts from outside'], ['tfo', 'TFO machines'],
@@ -122,10 +123,12 @@ function toast(msg, bad, action) {
 }
 
 const sheet = $('#sheet'), sheetBody = $('#sheet-body');
-let sheetSubmit = null, sheetChange = null;
-function openSheet(html, onSubmit, onChange) {
+let sheetSubmit = null, sheetChange = null, sheetClick = null;
+// onClick(e, formValues) gets clicks on [data-fe] buttons inside the sheet (add or remove a line)
+function openSheet(html, onSubmit, onChange, onClick) {
   sheetBody.innerHTML = html;
-  sheetSubmit = onSubmit; sheetChange = onChange || null;
+  sheetBody.scrollTop = 0;
+  sheetSubmit = onSubmit; sheetChange = onChange || null; sheetClick = onClick || null;
   if (!sheet.open) sheet.showModal();
 }
 function closeSheet() { if (sheet.open) sheet.close(); }
@@ -139,14 +142,26 @@ sheetBody.addEventListener('submit', (e) => {
   closeSheet();
 });
 sheetBody.addEventListener('change', (e) => { if (sheetChange) sheetChange(e, Object.fromEntries(new FormData(sheetBody))); });
-sheet.addEventListener('click', (e) => { if (e.target === sheet || e.target.closest('[data-close]')) closeSheet(); });
+sheet.addEventListener('click', (e) => {
+  if (e.target === sheet || e.target.closest('[data-close]')) { closeSheet(); return; }
+  const fe = e.target.closest('[data-fe]');
+  if (fe && sheetClick) { e.preventDefault(); sheetClick(fe, Object.fromEntries(new FormData(sheetBody))); }
+});
+// redraw an open sheet without losing its scroll position or the error line
+function redrawSheet(html) {
+  const top = sheetBody.scrollTop, keep = ($('.err', sheetBody) || {}).textContent || '';
+  sheetBody.innerHTML = html;
+  sheetBody.scrollTop = top;
+  const el = $('.err', sheetBody); if (el) el.textContent = keep;
+}
 const sheetHead = (title) => `<div class="sheet-head"><h2>${esc(title)}</h2><button type="button" class="btn quiet small" data-close>Close</button></div>`;
 
 // ---------- yarn picker ----------
 // TPM yarns first, then other yarns; typeId adds "no speed" for yarns that TFO type has no speed for
-function yarnGroups({ tpmOnly = false, typeId = '' } = {}) {
+function yarnGroups({ tpmOnly = false, typeId = '', baseOnly = false } = {}) {
   const ys = Object.values(S.M.yarns).sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
   const opt = (y) => ({ value: y.id, label: y.name, note: typeId ? (C.tfoSpeed(S.M, typeId, y.id) ? '' : 'no speed') : y.den ? `${Math.round(y.den)} D` : '', search: y.isTpm ? 'tpm' : '' });
+  if (baseOnly) return [{ group: 'Base yarns', options: ys.filter((y) => !y.isTpm).map(opt) }];
   const g = [{ group: 'TPM yarns', options: ys.filter((y) => y.isTpm).map(opt) }];
   if (!tpmOnly) g.push({ group: 'Other yarns', options: ys.filter((y) => !y.isTpm).map(opt) });
   return g;
@@ -160,7 +175,7 @@ function startPick(b) {
   const d = b.dataset;
   openPicker({
     title: d.title || 'Choose yarn', value: d.cur || '', blank: d.blank || '', back: b,
-    groups: yarnGroups({ tpmOnly: d.tpm === '1', typeId: d.type || '' }),
+    groups: yarnGroups({ tpmOnly: d.tpm === '1', typeId: d.type || '', baseOnly: d.base === '1' }),
     onPick: (v) => onPicked(d, v, b)
   });
 }
@@ -227,10 +242,18 @@ const flagNotes = () => {
 };
 
 // ---------- 1. Looms ----------
+// power off: "Power off" today, or the date it goes off / comes back inside the window
+function powerTxt(o) {
+  if (!o.po) return '';
+  if (o.offToday) return o.po.on == null ? 'Power off' : `Power off until ${sd(o.po.on - 1)}`;
+  if (o.po.on != null && o.po.on <= S.P.D0) return '';
+  return `Power off from ${sd(o.po.from)}${o.po.on != null ? ` to ${sd(o.po.on - 1)}` : ''}`;
+}
 function runPill(o) {
   const P = S.P;
+  if (o.offToday) return `<span class="pill bad">${esc(powerTxt(o))}</span>`;
   if (!o.f) return '<span class="pill">Idle</span>';
-  if (o.runout == null) return '<span class="pill warn">No RPM</span>';
+  if (o.runout == null) return o.po && o.po.on == null ? '<span class="pill">Runs till power off</span>' : '<span class="pill warn">No RPM</span>';
   const set = o.ovr != null ? ' · set' : '';
   if (o.overdue) return `<span class="pill bad">Ran out ${sd(o.runout)}${set}</span>`;
   const d = o.runout - P.D0;
@@ -245,9 +268,10 @@ function scrLooms() {
     h += `<div class="card"><p class="title">No looms entered yet</p><p class="muted">Start here. Enter every running loom with its loom group, fabric and beam balance; the other screens work from these. You can also load sample data to see the planner working and clear it later in Settings.</p><div class="btns"><button class="btn" data-act="loom-add">Add first loom</button><button class="btn ghost" data-act="sample-load">Load sample data</button></div></div>`;
   }
   const total = M.groupList.reduce((t, g) => t + (g.looms || 0), 0);
-  const running = L.filter((o) => o.f).length;
+  const offNow = L.filter((o) => o.offToday).length;
+  const running = L.filter((o) => o.f && !o.offToday).length;
   const soon = L.filter((o) => o.f && o.runout != null && o.runout < P.D0 + P.H).length;
-  if (L.length) h += `<div class="stats"><div class="stat"><span>Looms entered</span><b>${L.length}</b><span>of ${total} in the loom groups</span></div><div class="stat"><span>Running a fabric</span><b>${running}</b><span>${L.length - running} without a fabric</span></div><div class="stat"><span>Beams running out</span><b>${soon}</b><span>in the ${P.H}-day window</span></div></div>`;
+  if (L.length) h += `<div class="stats"><div class="stat"><span>Looms entered</span><b>${L.length}</b><span>of ${total} in the loom groups</span></div><div class="stat"><span>Running a fabric</span><b>${running}</b><span>${L.length - running - offNow} without a fabric</span></div><div class="stat"><span>Power off</span><b>${offNow}</b><span>switched off today</span></div><div class="stat"><span>Beams running out</span><b>${soon}</b><span>in the ${P.H}-day window</span></div></div>`;
   if (P.flags.noRpm.size) h += flagNotes();
   M.groupList.forEach((g) => {
     const gl = L.filter((o) => o.row.loom_group_id === g.id);
@@ -256,7 +280,7 @@ function scrLooms() {
     h += `<div class="grid2">${gl.map((o) => `<button class="card tight tap" data-act="loom-edit" data-id="${esc(o.row.id)}">
       <div class="row"><span><span class="loomno">Loom ${o.no}</span>${o.panna !== C.defPanna(g) ? ` <span class="pill acc">${pannaTxt(o.panna)}</span>` : ''}</span>${runPill(o)}</div>
       <div class="row"><span class="grow">${o.f ? esc(o.f.label) : '<span class="muted">No fabric</span>'}</span><span class="small n">${o.f ? `${n0(o.balToday)} m left` : ''}</span></div>
-      <div class="small">${prodLine(o)}</div>
+      <div class="small">${prodLine(o)}${!o.offToday && powerTxt(o) ? ` · <b>${esc(powerTxt(o))}</b>` : ''}</div>
     </button>`).join('')}</div>`;
   });
   const other = L.filter((o) => !o.g);
@@ -278,7 +302,7 @@ function loomSheet(id) {
   const r = id ? rows('PlannerLooms').find((x) => x.id === id) : null;
   const o = r ? P.looms.find((x) => x.row.id === id) : null;
   const maxNo = Math.max(0, ...rows('PlannerLooms').map((x) => C.num(x.loom_no) || 0));
-  const v = r ? { ...r } : { loom_no: String(maxNo + 1), loom_group_id: M.groupList[0] ? M.groupList[0].id : '', panna: '', fabric_id: '', beam_balance_m: '', balance_date: S.date, runout_override: '', notes: '' };
+  const v = r ? { power_off_from: '', power_on_date: '', ...r } : { loom_no: String(maxNo + 1), loom_group_id: M.groupList[0] ? M.groupList[0].id : '', panna: '', fabric_id: '', beam_balance_m: '', balance_date: S.date, runout_override: '', power_off_from: '', power_on_date: '', notes: '' };
   const body = (v) => {
     const g = M.groups[v.loom_group_id];
     const panna = C.num(v.panna) || C.defPanna(g);
@@ -300,6 +324,13 @@ function loomSheet(id) {
       <dt>Balance on ${sd(S.P.D0)}</dt><dd>${n0(o.balToday)} m</dd></dl>
       ${o.overRun ? '<p class="note bad">Production entered is more than this beam held. Check the balance or the production metres.</p>' : ''}` : ''}
     ${o && o.runCalc != null ? `<p class="small">Calculated run-out: ${fd(o.runCalc)}, counted from ${fd(o.prod.start)}. Leave your own date blank to use it.</p>` : `<p class="small">The run-out date is calculated from the balance less production entered since the balance date, RPM and warp shortage. Fill in your own date only to overrule it.</p>`}
+    <h3>Power</h3>
+    <div class="fields">
+      <label class="field"><span>Power off from</span><input type="date" name="power_off_from" value="${esc(v.power_off_from)}"></label>
+      <label class="field"><span>Back on from</span><input type="date" name="power_on_date" value="${esc(v.power_on_date)}"></label>
+    </div>
+    <p class="small">A loom with its power off uses no yarn and no beam, so its run-out date moves later by the days it stands off. Leave "Back on from" blank while it stays off.</p>
+    <div class="btns">${C.isOff(C.powerOff(v), C.dayNum(S.date)) ? '<button class="btn quiet small" value="power-on" formnovalidate>Switch on today</button>' : '<button class="btn quiet small" value="power-off" formnovalidate>Power off from today</button>'}${v.power_off_from ? '<button class="btn quiet small" value="power-clear" formnovalidate>Clear power off</button>' : ''}</div>
     <label class="field"><span>Notes</span><input type="text" name="notes" value="${esc(v.notes)}"></label>
     <p class="err"></p>
     <div class="btns"><button class="btn" value="save">Save</button>${r ? '<button class="btn danger" value="delete" formnovalidate>Delete loom</button>' : ''}</div>`;
@@ -312,6 +343,11 @@ function loomSheet(id) {
       commit([{ tab: 'PlannerLooms', op: 'delete', row: r, summary: `Loom ${r.loom_no}` }, ...cos.map((c) => ({ tab: 'PlannerChangeovers', op: 'delete', row: c, summary: `Loom ${r.loom_no} changeover` })), ...prs.map((c) => ({ tab: 'PlannerProduction', op: 'delete', row: c, summary: `Loom ${r.loom_no} production ${c.date}` }))]);
       return;
     }
+    if (act === 'power-off') { f.power_off_from = S.date; f.power_on_date = ''; }
+    if (act === 'power-on') { if (!f.power_off_from || f.power_off_from >= S.date) { f.power_off_from = ''; f.power_on_date = ''; } else f.power_on_date = S.date; }
+    if (act === 'power-clear') { f.power_off_from = ''; f.power_on_date = ''; }
+    if (f.power_on_date && !f.power_off_from) return 'Enter the date the power goes off, or clear "Back on from".';
+    if (f.power_on_date && f.power_on_date <= f.power_off_from) return 'Back on must be after the power off date.';
     const no = C.num(f.loom_no);
     if (!no || no < 1 || !Number.isInteger(no)) return 'Enter a whole loom number.';
     if (rows('PlannerLooms').some((x) => x.id !== (r && r.id) && C.num(x.loom_no) === no)) return `Loom ${no} is already entered.`;
@@ -320,8 +356,9 @@ function loomSheet(id) {
     if (fab && !C.fits(fab, g, panna)) return fab.dobby && !g.dobby ? `${fab.label} is dobby; it needs a dobby loom.` : `${fab.label} does not fit ${g.width} cm at ${pannaTxt(panna)}.`;
     if (fab && f.beam_balance_m === '') return 'Enter the beam balance in metres.';
     if (f.balance_date && f.balance_date > S.date) return 'The balance date cannot be after the plan date.';
-    const row = { id: r ? r.id : newId('lm'), loom_no: String(no), loom_group_id: f.loom_group_id, panna: String(panna), fabric_id: f.fabric_id || '', beam_balance_m: f.beam_balance_m, balance_date: f.balance_date || S.date, runout_override: f.runout_override || '', notes: f.notes || '' };
-    const ch = [{ tab: 'PlannerLooms', row, summary: `Loom ${no} · ${fab ? fab.label : 'idle'} · ${f.beam_balance_m || 0} m` }];
+    const row = { id: r ? r.id : newId('lm'), loom_no: String(no), loom_group_id: f.loom_group_id, panna: String(panna), fabric_id: f.fabric_id || '', beam_balance_m: f.beam_balance_m, balance_date: f.balance_date || S.date, runout_override: f.runout_override || '', power_off_from: f.power_off_from || '', power_on_date: f.power_off_from ? f.power_on_date || '' : '', notes: f.notes || '' };
+    const pw = row.power_off_from ? ` · power off from ${row.power_off_from}${row.power_on_date ? ` to ${C.addDays(row.power_on_date, -1)}` : ''}` : '';
+    const ch = [{ tab: 'PlannerLooms', row, summary: `Loom ${no} · ${fab ? fab.label : 'idle'} · ${f.beam_balance_m || 0} m${pw}` }];
     if (r && C.num(r.loom_no) !== no) ['PlannerChangeovers', 'PlannerProduction'].forEach((tab) => rows(tab).filter((c) => C.num(c.loom_no) === C.num(r.loom_no)).forEach((c) => ch.push({ tab, row: { ...c, loom_no: String(no) }, summary: `Loom ${r.loom_no} → ${no}` })));
     commit(ch);
   }, (e, f) => {
@@ -361,7 +398,7 @@ function scrProduction() {
       const e = byNo[String(o.no)];
       const before = e && day < o.bdate;
       return `<div class="card tight prod-row"><div class="grow"><span class="loomno">Loom ${o.no}</span> <span class="small">${o.f ? esc(o.f.label) : 'No fabric'}</span>
-        <span class="small" style="display:block">${o.mday ? `about ${n0(o.mday)} m/day · ` : ''}${o.bal != null ? `${n0(o.cur)} m on beam` : 'no balance'}${before ? ' · <span class="pill">before balance date</span>' : ''}</span></div>
+        <span class="small" style="display:block">${o.mday ? `about ${n0(o.mday)} m/day · ` : ''}${o.bal != null ? `${n0(o.cur)} m on beam` : 'no balance'}${before ? ' · <span class="pill">before balance date</span>' : ''}${C.isOff(o.po, day) ? ' · <span class="pill bad">Power off</span>' : ''}</span></div>
         <input type="number" inputmode="decimal" min="0" step="1" id="pr-${o.no}" data-pr="${o.no}" value="${e ? esc(e.metres) : ''}" placeholder="m" aria-label="Loom ${o.no} metres on ${date}"></div>`;
     }).join('')}</div>`;
   });
@@ -386,6 +423,7 @@ function scrRunning() {
   <div class="stats">
     <div class="stat"><span>Looms running</span><b>${mc(tot)}</b><span>${mc(plain)} on plain · ${mc(dobby)} on dobby groups</span></div>
     <div class="stat"><span>Idle looms</span><b>${mc(D0.idle)}</b><span>no fabric on the loom</span></div>
+    <div class="stat"><span>Power off</span><b>${D0.off}</b><span>${D0.off ? 'loom ' + D0.offLooms.join(', ') : 'all looms have power'}</span></div>
     <div class="stat"><span>TPM weft today</span><b>${kg(tpmW)} kg</b><span>weft shortage included</span></div>
     <div class="stat"><span>Changeovers today</span><b>${co}</b><span>counted half old, half new</span></div>
   </div>${flagNotes()}`;
@@ -797,11 +835,13 @@ function scrRpm() {
   </tbody></table></div>`;
 }
 
-// ---------- 12. Fabric master and 13. Yarn master (view only) ----------
-// No money anywhere here: no cost per pick, price, rates, processing, brokering, VATAV or TPM delta.
-const viewOnly = '<p class="note ok">View only. Edit in the Fabric Database app.</p>';
+// ---------- 12. Fabric master and 13. Yarn master (editable) ----------
+// Edits go to the shared master tabs, so the Fabric Database app shows them too (rows built in masters.js).
+// No money anywhere here: no cost per pick, price, rates, processing, brokering, VATAV, finish or TPM delta.
+const masterNote = (what) => `<p class="note ok">Changes here are saved to the shared master, so the Fabric Database app shows them too. Prices and rates are set there. To delete a ${what}, use the Fabric Database app.</p>`;
 const searchBox = (id, q, ph, label) => `<label class="search page-search"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input type="search" id="${id}" value="${esc(q)}" placeholder="${esc(ph)}" aria-label="${esc(label)}" autocomplete="off" spellcheck="false"></label>`;
 const den0 = (v) => (v == null ? '–' : Number.isInteger(v) ? String(v) : v.toFixed(1));
+const PLUS = '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 // fabrics of Weavelon 2 that use a yarn, with the side
 function yarnUse(yid) {
   return S.M.fabricList.flatMap((f) => {
@@ -824,14 +864,14 @@ function scrFabricMaster() {
   const card = (f) => {
     const txt = [f.label, f.weave, f.note, ...f.warp.map((w) => yn(w.yarn_id)), ...f.weft.map((w) => yn(w.yarn_id))].join(' ');
     return `<button class="card tight tap" data-act="fm-open" data-id="${f.id}" data-s="${esc(txt.toLowerCase())}">
-      <div class="row"><span class="title">${esc(f.label)}</span><span class="pill ${f.dobby ? 'acc' : ''}">${f.weave}</span></div>
+      <div class="row"><span class="title">${esc(f.label)}</span><span class="pill ${f.dobby ? 'acc' : ''}">${esc(MS.weaveOf(f.rawWeave))}</span></div>
       <dl class="kv nw"><dt>PPI · reed · RS</dt><dd>${f.ppi ?? '–'} · ${f.reed ?? '–'} · ${f.rs ?? '–'}″</dd>
       <dt>RPM single / double</dt><dd>${f.rpm1 ? n0(f.rpm1) : '–'} / ${f.rpm2 ? n0(f.rpm2) : '–'}</dd>
       <dt>Shortage warp / weft</dt><dd>${f.wsh}% / ${f.fsh}%</dd></dl></button>`;
   };
-  return `<div class="screen-head"><h2>Fabric master</h2><span class="small">${M.fabricList.length} fabrics on ${esc(M.unit.name || 'Weavelon 2')}</span></div>
+  return `<div class="screen-head"><h2>Fabric master</h2><span class="small">${M.fabricList.length} fabrics on ${esc(M.unit.name || 'Weavelon 2')}</span><button class="btn small" data-act="fm-add">${PLUS} Add fabric</button></div>
   ${searchBox('fm-q', S.fq, 'Search fabric, weave or yarn', 'Search fabrics')}
-  ${viewOnly}
+  ${masterNote('fabric')}
   <div class="grid2" data-sgroup>${M.fabricList.map(card).join('')}</div>
   <div class="card empty" id="fm-none" hidden>No fabric matches.</div>`;
 }
@@ -842,8 +882,8 @@ function fabricDetail(fid) {
   const gs = groupsFor(f);
   const today = Object.values(S.P.days[0].fab).filter((x) => x.f.id === fid).reduce((t, x) => t + x.looms, 0);
   openSheet(`${sheetHead(f.label)}
-    <p class="small">View only. Edit in the Fabric Database app.</p>
-    <dl class="kv"><dt>Weave</dt><dd>${f.weave}</dd>${f.note ? `<dt>Design</dt><dd>${esc(f.note)}</dd>` : ''}
+    <div class="btns"><button type="button" class="btn small" data-fe="edit">Edit</button><button type="button" class="btn quiet small" data-fe="rs">Duplicate for new RS</button></div>
+    <dl class="kv"><dt>Weave</dt><dd>${esc(MS.weaveOf(f.rawWeave))}</dd>${f.note ? `<dt>Design</dt><dd>${esc(f.note)}</dd>` : ''}${f.endUse ? `<dt>End use</dt><dd>${esc(f.endUse)}</dd>` : ''}
     <dt>PPI</dt><dd>${f.ppi ?? '–'}</dd><dt>Reed</dt><dd>${f.reed ?? '–'}</dd><dt>Reed space</dt><dd>${f.rs ?? '–'}″</dd>${f.greige ? `<dt>Greige width</dt><dd>${f.greige}″</dd>` : ''}
     <dt>Loom RPM, single panna</dt><dd>${f.rpm1 ? n0(f.rpm1) : '–'}</dd><dt>Loom RPM, double panna</dt><dd>${f.rpm2 ? n0(f.rpm2) : '–'}</dd>
     <dt>Warp shortage</dt><dd>${f.wsh}%</dd><dt>Weft shortage</dt><dd>${f.fsh}%</dd><dt>Looms on it today</dt><dd>${today ? mc(today) : '–'}</dd></dl>
@@ -854,7 +894,122 @@ function fabricDetail(fid) {
     <div class="tw"><table><thead><tr><th>Yarn</th><th>Parts</th><th>PPI share</th><th>Denier</th></tr></thead><tbody>
     ${f.weft.map((w) => `<tr><td>${esc(yn(w.yarn_id))}${tpmPill(w.yarn_id)}</td><td>${w.parts ?? '–'}</td><td>${f.ppi ? (f.ppi * w.share).toFixed(1) : '–'} <span class="small">${Math.round(w.share * 100)}%</span></td><td>${den0(M.yarns[w.yarn_id] && M.yarns[w.yarn_id].den)}</td></tr>`).join('') || '<tr><td colspan="4">No weft yarn.</td></tr>'}</tbody></table></div>
     <h3>Loom groups and beam length</h3>
-    <div class="list">${gs.map(({ g, ok, txt }) => { const b = beams.find((x) => x.g.id === g.id).b; return `<div class="card tight${ok ? '' : ' off'}"><div class="row"><span class="grow"><b>${esc(g.label)}</b><span class="small" style="display:block">${ok ? 'Runs on it · ' : 'Cannot run · '}${txt.replace(/^no: /, '')}</span></span><span class="small n">${b ? `beam ${n0(b.len)} m` : ok ? 'beam length not set' : ''}</span></div></div>`; }).join('')}</div>`, null);
+    <div class="list">${gs.map(({ g, ok, txt }) => { const b = beams.find((x) => x.g.id === g.id).b; return `<div class="card tight${ok ? '' : ' off'}"><div class="row"><span class="grow"><b>${esc(g.label)}</b><span class="small" style="display:block">${ok ? 'Runs on it · ' : 'Cannot run · '}${txt.replace(/^no: /, '')}</span></span><span class="small n">${b ? `beam ${n0(b.len)} m` : ok ? 'beam length not set' : ''}</span></div></div>`; }).join('')}</div>
+    <p class="small">To delete this fabric, use the Fabric Database app.</p>`, null, null, (b) => {
+    if (b.dataset.fe === 'edit') fabricEditor(fid);
+    if (b.dataset.fe === 'rs') rsCopySheet(fid);
+  });
+}
+
+// One editor for a new fabric, an edit, or a copy at a new RS (draft given).
+function fabricEditor(fid, draft, opts = {}) {
+  const d = draft || MS.fabricDraft(S.tabs, fid);
+  const isNew = !d.id;
+  const numIn = (name, label, step = 'any', extra = '') => `<label class="field"><span>${label}</span><input type="number" name="${name}" inputmode="decimal" min="0" step="${step}" value="${esc(d[name])}"${extra}></label>`;
+  const lineHtml = (l, i) => {
+    const y = S.M.yarns[l.yarn_id];
+    const pick = `<input type="hidden" name="ly_${i}" value="${esc(l.yarn_id)}">${pickBtn({ label: `${l.side} yarn`, text: y ? y.name : l.yarn_id ? 'Unknown yarn' : `Choose ${l.side} yarn`, empty: !y, attrs: { kind: 'field', name: `ly_${i}`, cur: l.yarn_id, title: `Choose ${l.side} yarn` } })}`;
+    const rm = `<button type="button" class="btn danger small fe-rm" data-fe="rm" data-i="${i}" aria-label="Remove ${l.side} yarn${y ? ' ' + esc(y.name) : ''}">Remove</button>`;
+    return l.side === 'warp'
+      ? `<div class="fe-line"><div class="fe-pick">${pick}</div><label class="field fe-n"><span>Ends</span><input type="number" name="le_${i}" inputmode="numeric" min="0" step="1" value="${esc(l.ends)}" aria-label="Ends"></label>${rm}</div>`
+      : `<div class="fe-line"><div class="fe-pick">${pick}</div><label class="field fe-n"><span>Share</span><input type="number" name="lp_${i}" inputmode="decimal" min="0" step="any" value="${esc(l.parts)}" aria-label="Pick share"></label><label class="field fe-n"><span>Pattern</span><input type="text" name="lt_${i}" value="${esc(l.pattern)}" placeholder="2S:2Z" aria-label="Pattern"></label>${rm}</div>`;
+  };
+  const shownTxt = () => {
+    const shown = String(d.name || '').trim() ? MS.fabricLabel({ name: MS.stripRs(MS.titleCase(d.name), d.reed_space_in), reed_space_in: d.reed_space_in }) : '';
+    return `${shown ? `Shown as <b>${esc(shown)}</b>. ` : ''}The RS is added to the name automatically; each word starts with a capital.`;
+  };
+  const body = () => {
+    const slots = MS.beamSlots(d.weave, S.tabs, S.M.uid);
+    const lines = (side) => d.lines.map((l, i) => (l.side === side ? lineHtml(l, i) : '')).join('');
+    const dobby = MS.weaveOf(d.weave) === 'Dobby';
+    return `${sheetHead(opts.title || (isNew ? 'New fabric' : `Edit ${S.M.fabrics[d.id] ? S.M.fabrics[d.id].label : 'fabric'}`))}
+    ${opts.intro ? `<p class="small">${opts.intro}</p>` : ''}
+    <label class="field"><span>Quality name (without the RS)</span><input type="text" name="name" value="${esc(d.name)}" placeholder="e.g. Natural Crape" autocomplete="off" required></label>
+    <p class="small" id="fe-shown">${shownTxt()}</p>
+    <div class="fields"><label class="field"><span>Weave</span><select name="weave">${MS.WEAVES.map((w) => `<option${sel(w, MS.weaveOf(d.weave))}>${w}</option>`).join('')}</select></label>
+    <label class="field"><span>Design note</span><input type="text" name="design_note" value="${esc(d.design_note)}" placeholder="e.g. 2/1 twill"></label>
+    <label class="field"><span>End use</span><input type="text" name="end_use" value="${esc(d.end_use)}" placeholder="Optional"></label></div>
+    <h3>Construction</h3>
+    <div class="fields">${numIn('ppi', 'Pick (PPI)')}${numIn('reed', 'Reed')}${numIn('reed_space_in', 'Reed space, in')}${numIn('greige_width_in', 'Greige width, in')}${numIn('warp_shortage_pct', 'Warp shortage %')}${numIn('weft_shortage_pct', 'Weft shortage %')}</div>
+    <h3>Loom RPM</h3>
+    <div class="fields">${numIn('loom_rpm', 'Single panna', '1')}${numIn('loom_rpm_dp', 'Double panna', '1')}</div>
+    <h3>Warp</h3><p class="small">Ends per panna.</p>
+    <div class="list">${lines('warp')}</div>
+    <button type="button" class="btn quiet small fe-add" data-fe="add" data-side="warp">${PLUS} Add warp yarn</button>
+    <h3>Weft</h3><p class="small">Pick share splits the picks between weft yarns, e.g. 1 and 1 for alternate picks. One weft yarn takes all picks.</p>
+    <div class="list">${lines('weft')}</div>
+    <button type="button" class="btn quiet small fe-add" data-fe="add" data-side="weft">${PLUS} Add weft yarn</button>
+    <h3>Beam length</h3><p class="small">Machine length in metres for each loom width of Weavelon 2. ${dobby ? 'A dobby quality runs on dobby looms only.' : 'One length per width, used for its plain and dobby looms.'} Leave blank if not set.</p>
+    <div class="fields">${slots.map((sl, k) => `<label class="field"><span>${esc(sl.label)} <span class="muted">${dobby ? 'dobby' : sl.sheds.length > 1 ? 'plain and dobby' : sl.sheds[0]}</span></span><input type="number" name="bm_${k}" inputmode="numeric" min="0" step="1" value="${esc(MS.slotValue(sl, d.beams))}" placeholder="m"></label>`).join('') || '<p class="small">No matching loom group on Weavelon 2.</p>'}</div>
+    ${isNew ? '<p class="small">Saved with Weavelon 2 as its unit. Price and finishing are filled in the Fabric Database app.</p>' : '<p class="small">To delete this fabric, use the Fabric Database app.</p>'}
+    <p class="err"></p>
+    <div class="btns"><button class="btn" value="save">${isNew ? 'Add fabric' : 'Save'}</button><button class="btn quiet" value="cancel" formnovalidate>Cancel</button></div>`;
+  };
+  // form values back into the draft
+  const read = (f) => {
+    ['name', 'weave', 'design_note', 'end_use', 'ppi', 'reed', 'reed_space_in', 'greige_width_in', 'warp_shortage_pct', 'weft_shortage_pct', 'loom_rpm', 'loom_rpm_dp'].forEach((k) => { if (f[k] !== undefined) d[k] = f[k]; });
+    d.lines.forEach((l, i) => {
+      if (f[`ly_${i}`] !== undefined) l.yarn_id = f[`ly_${i}`];
+      if (f[`le_${i}`] !== undefined) l.ends = f[`le_${i}`];
+      if (f[`lp_${i}`] !== undefined) l.parts = f[`lp_${i}`];
+      if (f[`lt_${i}`] !== undefined) l.pattern = f[`lt_${i}`];
+    });
+    // beam slots as drawn (before any weave change): one value fills every group in the slot
+    MS.beamSlots(sheetBody.dataset.weave || d.weave, S.tabs, S.M.uid).forEach((sl, k) => { if (f[`bm_${k}`] !== undefined) sl.groupIds.forEach((g) => { d.beams[g] = f[`bm_${k}`]; }); });
+  };
+  const draw = (first) => { const h = body(); if (first) openSheet(h, submit, change, click); else redrawSheet(h); sheetBody.dataset.weave = d.weave; };
+  const submit = (f) => {
+    read(f);
+    const err = MS.fabricErrors(d);
+    if (err) return err;
+    const dup = MS.duplicateFabric(S.tabs, d);
+    if (dup && !confirm(`${dup} is already in the master. Save another fabric with the same name, RS and weave?`)) return 'Not saved: same name, RS and weave as an existing fabric.';
+    const { id, label, changes } = MS.fabricChanges(S.tabs, d, { unitId: S.M.uid, extraUnits: opts.extraUnits || [] });
+    commit(changes);
+    toast(isNew ? `${label} added` : `${label} saved`);
+    setTimeout(() => fabricDetail(id), 0);
+  };
+  const change = (e, f) => {
+    const n = e.target.name || '';
+    read(f);
+    if (n === 'weave' || n.startsWith('ly_')) draw();
+    else if (n === 'name' || n === 'reed_space_in') { const p = $('#fe-shown', sheetBody); if (p) p.innerHTML = shownTxt(); }
+  };
+  const click = (b, f) => {
+    read(f);
+    if (b.dataset.fe === 'add') d.lines.push(b.dataset.side === 'warp' ? { id: '', side: 'warp', yarn_id: '', ends: '' } : { id: '', side: 'weft', yarn_id: '', parts: '1', pattern: '' });
+    if (b.dataset.fe === 'rm') d.lines.splice(+b.dataset.i, 1);
+    draw();
+    if (b.dataset.fe === 'add') { const nb = sheetBody.querySelector(`.pick-btn[data-name="ly_${d.lines.length - 1}"]`); if (nb) nb.focus({ preventScroll: false }); }
+  };
+  draw(true);
+}
+
+function rsCopySheet(fid) {
+  const f = S.M.fabrics[fid];
+  if (!f) return;
+  const body = (v, plan) => `${sheetHead('Duplicate for new RS')}
+    <p class="small">${esc(f.label)}. Warp ends${f.greige ? ' and greige width' : ''} scale with RS. Everything else is copied, including beam lengths and units. Price stays blank for the Fabric Database app.</p>
+    ${f.rs ? `<label class="field"><span>New RS, in</span><input type="number" name="rs" inputmode="decimal" min="0" step="any" value="${esc(v)}" placeholder="${f.rs}" autofocus></label>
+    ${plan ? `<dl class="kv"><dt>Name</dt><dd><b>${esc(plan.label)}</b></dd><dt>RS</dt><dd>${plan.oldRs} → ${plan.newRs} in</dd>${plan.warp.map((w) => `<dt>Warp ends · ${esc(yn(w.yarn_id))}</dt><dd>${n0(w.from)} → ${n0(w.to)}</dd>`).join('')}</dl>` : ''}
+    <p class="err"></p><div class="btns"><button class="btn" value="save">Duplicate</button><button class="btn quiet" value="review" formnovalidate>Review before saving</button></div>`
+    : '<p class="note bad">This fabric has no reed space. Add the RS from Edit first.</p>'}`;
+  openSheet(body('', null), (fm, act) => {
+    const plan = MS.rsCopy(S.tabs, fid, fm.rs, S.M.uid);
+    if (!plan) return 'Enter the new RS.';
+    if (act === 'review') { setTimeout(() => fabricEditor(null, plan.draft, { title: `New fabric · ${plan.label}`, intro: `Copy of ${esc(f.label)} at RS ${plan.newRs}. Check and save.`, extraUnits: plan.extraUnits }), 0); return; }
+    const dup = MS.duplicateFabric(S.tabs, plan.draft);
+    if (dup && !confirm(`${dup} is already in the master. Save another fabric with the same name, RS and weave?`)) return 'Not saved.';
+    const { id, label, changes } = MS.fabricChanges(S.tabs, plan.draft, { unitId: S.M.uid, extraUnits: plan.extraUnits });
+    commit(changes);
+    toast(`${label} added`);
+    setTimeout(() => fabricDetail(id), 0);
+  }, (e, fm) => {
+    if (e.target.name !== 'rs') return;
+    const plan = MS.rsCopy(S.tabs, fid, fm.rs, S.M.uid);
+    redrawSheet(body(fm.rs, plan));
+    const inp = sheetBody.querySelector('input[name=rs]'); if (inp) inp.focus();
+  });
 }
 
 function scrYarnMaster() {
@@ -866,24 +1021,72 @@ function scrYarnMaster() {
     const twisted = !y.isTpm ? all.filter((t) => t.base === y.id) : [];
     const sp = y.isTpm ? M.typeList.map((t) => ({ t, s: M.speeds[t.id + '|' + y.id], c: C.tfoSpeed(M, t.id, y.id) })) : [];
     const txt = [y.name, y.count, y.unit, y.tpm, y.twist, base ? base.name : '', y.material, ...use.map((u) => u.f.label)].join(' ');
-    return `<div class="card tight" data-s="${esc(txt.toLowerCase())}">
+    return `<button class="card tight tap" data-act="ym-open" data-id="${y.id}" data-s="${esc(txt.toLowerCase())}">
       <div class="row"><span class="title">${esc(y.name)}</span>${y.isTpm ? '<span class="pill tpm">TPM</span>' : ''}</div>
-      <dl class="kv"><dt>Count</dt><dd>${y.count != null ? `${den0(y.count)} ${esc(y.unit)}` : '–'}${y.den != null && y.unit.toUpperCase() !== 'D' ? ` · ${den0(y.den)} D` : ''}</dd>
+      <dl class="kv"><dt>Count</dt><dd>${y.count != null ? `${den0(y.count)} ${esc(y.unit)}` : y.den != null ? `${den0(y.den)} D <span class="muted">(base)</span>` : '–'}${y.count != null && y.den != null && y.unit.toUpperCase() !== 'D' ? ` · ${den0(y.den)} D` : ''}</dd>
       ${y.isTpm ? `<dt>TPM</dt><dd>${y.tpm != null ? n0(y.tpm) : '–'}</dd>` : ''}
       <dt>Twist</dt><dd>${esc(y.twist) || '–'}</dd>
       ${y.isTpm ? `<dt>Base yarn</dt><dd>${base ? esc(base.name) : '–'}</dd>` : twisted.length ? `<dt>Twisted as</dt><dd>${twisted.map((t) => esc(t.name)).join(', ')}</dd>` : ''}
       ${y.material ? `<dt>Material</dt><dd>${esc(y.material)}</dd>` : ''}</dl>
       ${y.isTpm ? `<div><div class="small muted">TFO speed</div><div class="speeds">${sp.map(({ t, s, c }) => `<div>${esc(t.name)}: <b>${s && s.rpm ? `${n0(s.rpm)} RPM${c ? ` · ${c.gph.toFixed(2)} g/spindle/h` : ''}` : 'no speed'}</b></div>`).join('') || '<div class="small">No TFO types.</div>'}</div></div>` : ''}
       <div><div class="small muted">Used in</div><div class="small">${use.length ? use.map((u) => `${esc(u.f.label)} <span class="muted">(${u.sides.join(', ')})</span>`).join(' · ') : 'No Weavelon 2 fabric'}</div></div>
-    </div>`;
+    </button>`;
   };
   const tpm = all.filter((y) => y.isTpm), base = all.filter((y) => !y.isTpm);
-  return `<div class="screen-head"><h2>Yarn master</h2><span class="small">${all.length} yarns</span></div>
+  return `<div class="screen-head"><h2>Yarn master</h2><span class="small">${all.length} yarns</span><span class="btns"><button class="btn small" data-act="ym-add" data-v="tpm">${PLUS} TPM yarn</button><button class="btn quiet small" data-act="ym-add" data-v="base">${PLUS} Base yarn</button></span></div>
   ${searchBox('ym-q', S.yq, 'Search, e.g. tpm 1650', 'Search yarns')}
-  ${viewOnly}
+  ${masterNote('yarn')}
   <section data-sgroup><div class="section-title"><h3>TPM yarns</h3><span class="small" data-scount>${tpm.length}</span></div><div class="grid2">${tpm.map(card).join('')}</div></section>
   <section data-sgroup><div class="section-title"><h3>Base yarns</h3><span class="small" data-scount>${base.length}</span></div><div class="grid2">${base.map(card).join('')}</div></section>
   <div class="card empty" id="ym-none" hidden>No yarn matches.</div>`;
+}
+
+function yarnEditor(yid, kind) {
+  const M = S.M;
+  const d = MS.yarnDraft(S.tabs, yid, kind);
+  const isNew = !d.id;
+  const body = () => {
+    const tpm = d.kind === 'tpm';
+    const base = M.yarns[d.base_yarn_id];
+    const use = d.id ? yarnUse(d.id) : [];
+    const yNow = d.id ? M.yarns[d.id] : null;
+    return `${sheetHead(isNew ? `New ${tpm ? 'TPM' : 'base'} yarn` : `Edit ${M.yarns[d.id] ? M.yarns[d.id].name : 'yarn'}`)}
+    ${isNew ? `<label class="field"><span>Kind</span><select name="kind"><option value="base"${sel('base', d.kind)}>Base yarn</option><option value="tpm"${sel('tpm', d.kind)}>TPM yarn</option></select></label>` : `<p class="small">${tpm ? 'TPM yarn' : 'Base yarn'}</p>`}
+    <label class="field"><span>Name</span><input type="text" name="name" value="${esc(d.name)}" placeholder="${tpm ? 'e.g. 60/24 Viscose 1650 TPM S/Z' : 'e.g. 60/24 Viscose'}" autocomplete="off" required></label>
+    ${tpm ? `<div class="field"><span>Base yarn</span><input type="hidden" name="base_yarn_id" value="${esc(d.base_yarn_id)}">${pickBtn({ label: 'Base yarn', text: base ? base.name : 'Choose base yarn', empty: !base, need: !base, attrs: { kind: 'field', name: 'base_yarn_id', cur: d.base_yarn_id, title: 'Choose base yarn', base: '1' } })}</div>
+    <div class="fields"><label class="field"><span>TPM</span><input type="number" name="tpm" inputmode="numeric" min="0" step="any" value="${esc(d.tpm)}"></label>
+    <label class="field"><span>Twist</span><select name="twist">${['S', 'Z', 'S/Z'].map((x) => `<option${sel(x, d.twist || 'S/Z')}>${x}</option>`).join('')}</select></label></div>` : ''}
+    <div class="fields"><label class="field"><span>Count</span><input type="number" name="count" inputmode="decimal" min="0" step="any" value="${esc(d.count)}" placeholder="${tpm && base && base.den ? den0(base.den) : ''}"></label>
+    <label class="field"><span>Count unit</span><select name="count_unit"><option value="D"${sel('D', d.count_unit)}>D (denier)</option><option value="Ne"${sel('Ne', d.count_unit)}>Ne</option></select></label>
+    <label class="field"><span>Material</span><input type="text" name="material" value="${esc(d.material)}" placeholder="Viscose"></label></div>
+    ${tpm ? `<p class="small">Count blank = the base yarn's. Enter the twisted denier if it differs.</p>` : `<div class="fields"><label class="field"><span>Form</span><input type="text" name="form" value="${esc(d.form)}" placeholder="FDY, DTY, spun"></label>
+    <label class="field"><span>Filaments</span><input type="number" name="filaments" inputmode="numeric" min="0" step="1" value="${esc(d.filaments)}"></label>
+    <label class="field"><span>Lustre</span><input type="text" name="lustre" value="${esc(d.lustre)}" placeholder="SD, BR, FD"></label></div>`}
+    <label class="field"><span>Notes</span><input type="text" name="notes" value="${esc(d.notes)}"></label>
+    ${tpm ? `<h3>TFO speed on Weavelon 2</h3>
+    <p class="note"><b>Enter RPM already multiplied by 2.</b> The planner never doubles it.</p>
+    <div class="fields">${M.typeList.map((t) => { const c = yNow ? C.tfoSpeed(M, t.id, d.id) : null; return `<label class="field"><span>${esc(t.name)}</span><input type="number" name="sp_${t.id}" inputmode="numeric" min="0" step="1" value="${esc(d.speeds[t.id] || '')}" placeholder="RPM"><span class="small muted">${c ? `${c.gph.toFixed(2)} g/spindle/h at ${c.eff}%` : 'no speed'}</span></label>`; }).join('') || '<p class="small">No TFO types on Weavelon 2.</p>'}</div>` : ''}
+    ${d.id ? `<p class="small">Used in ${use.length ? use.map((u) => esc(u.f.label)).join(', ') : 'no Weavelon 2 fabric'}. To delete this yarn, use the Fabric Database app.</p>` : '<p class="small">Rates are set in the Fabric Database app.</p>'}
+    <p class="err"></p>
+    <div class="btns"><button class="btn" value="save">${isNew ? 'Add yarn' : 'Save'}</button><button class="btn quiet" value="cancel" formnovalidate>Cancel</button></div>`;
+  };
+  const read = (f) => {
+    ['kind', 'name', 'base_yarn_id', 'tpm', 'twist', 'count', 'count_unit', 'material', 'form', 'filaments', 'lustre', 'notes'].forEach((k) => { if (f[k] !== undefined) d[k] = f[k]; });
+    M.typeList.forEach((t) => { if (f[`sp_${t.id}`] !== undefined) d.speeds[t.id] = f[`sp_${t.id}`]; });
+  };
+  openSheet(body(), (f) => {
+    read(f);
+    const err = MS.yarnErrors(S.tabs, d, M.uid);
+    if (err) return err;
+    const dup = MS.duplicateYarn(S.tabs, d.name, d.id);
+    if (dup && !confirm(`A yarn named ${dup} is already in the master. Save another with the same name?`)) return 'Not saved: a yarn with this name exists.';
+    const { changes } = MS.yarnChanges(S.tabs, d, M.uid);
+    commit(changes);
+    toast(isNew ? `${d.name.trim()} added` : `${d.name.trim()} saved`);
+  }, (e, f) => {
+    read(f);
+    if (e.target.name === 'kind' || e.target.name === 'base_yarn_id') redrawSheet(body());
+  });
 }
 // filter the master lists in place (no re-render, so typing is never interrupted)
 function applySearch() {
@@ -927,20 +1130,51 @@ function openSettings() {
   <p class="small">Warp yarn for a new beam is needed this many days before the changeover. For TPM warp the latest doff is one more day earlier.</p>
   <p class="err"></p>
   <div class="btns"><button class="btn" value="save">Save and reload</button></div>
+  ${conf.key && conf.role === 'owner' ? `<div class="card tight"><b>People with access</b><p class="small">Give each person their own key, so their edits carry their name. Removing someone stops only their key.</p><div class="btns"><button class="btn quiet small" value="people" formnovalidate>Manage people</button></div></div>` : conf.user ? `<p class="small">Only the owner can add or remove people.</p>` : ''}
   <div class="card tight"><b>Sample data</b><p class="small">${smp ? `${smp} sample rows are in the Planner tabs.` : 'No sample rows.'}</p>
   <div class="btns">${smp ? '<button class="btn danger small" value="clear-sample" formnovalidate>Clear sample data</button>' : rows('PlannerLooms').length ? '' : '<button class="btn quiet small" value="load-sample" formnovalidate>Load sample data</button>'}</div></div>`;
   openSheet(body, (f, act) => {
     if (act === 'clear-sample') { setTimeout(clearSample, 0); return; }
     if (act === 'load-sample') { setTimeout(loadSample, 0); return; }
+    if (act === 'people') { setTimeout(peopleSheet, 0); return; }
     const url = (f.url || '').trim() || DEFAULT_URL;
     if (!/^https:\/\/script\.google\.com\//.test(url)) return 'The URL should start with https://script.google.com/';
     const keyChanged = (f.key || '').trim() !== conf.key || url !== conf.url;
+    if ((f.key || '').trim() !== conf.key) conf.role = '';
     conf.key = (f.key || '').trim();
     conf.url = url;
     const ld = C.num(f.lead);
     if (ld != null && ld >= 0 && ld !== lead() && S.M) commit([{ tab: 'PlannerSettings', row: { id: 'set_lead_days', key: 'lead_days', value: String(Math.round(ld)) }, summary: `Warping lead time ${Math.round(ld)} days` }]);
     if (keyChanged || !S.loadedAt) reloadAll(); else syncDot();
   });
+}
+// People with access (owner only), kept by the planner's Apps Script; each person has their own key.
+function peopleSheet() {
+  let list = null, err = '', fresh = null, busy = false;
+  const body = () => `<span hidden data-people></span>${sheetHead('People with access')}
+    <p class="small">Each person enters their own key in Settings on their phone or laptop. Their edits are saved under their name, in the planner and in the Change log tab. These keys are for the TFO Planner only; the Fabric Database app has its own.</p>
+    ${fresh ? `<div class="note ok"><b>Key for ${esc(fresh.name)}</b><br><span class="person"><code>${esc(fresh.key)}</code><button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(fresh.key)}">Copy</button></span><br><span class="small">Send it to them privately. It is also listed below.</span></div>` : ''}
+    <div class="fields"><label class="field"><span>Name</span><input type="text" name="pname" autocomplete="off" placeholder="e.g. Ishaan"></label></div>
+    <div class="btns"><button class="btn" value="add"${busy ? ' disabled' : ''}>Add person</button></div>
+    <p class="err">${esc(err)}</p>
+    ${list == null ? '<p class="small">Loading…</p>' : `<div class="list">${list.map((p) => `<div class="card tight person"><span class="grow"><b>${esc(p.name)}</b> <span class="pill${p.role === 'owner' ? ' acc' : ''}">${p.role === 'owner' ? 'Owner' : 'Editor'}</span><span class="small" style="display:block">${p.added_at ? 'Added ' + esc(new Date(p.added_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })) : ''}</span></span>
+      <code>${esc(p.key)}</code>
+      <span class="btns"><button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(p.key)}">Copy key</button><button type="button" class="btn quiet small" data-fe="rename" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Rename</button>${p.role === 'owner' ? '' : `<button type="button" class="btn danger small" data-fe="remove" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Remove</button>`}</span></div>`).join('')}</div>`}`;
+  const draw = () => { if (!sheet.open || !sheetBody.querySelector('[data-people]')) return; const top = sheetBody.scrollTop; sheetBody.innerHTML = body(); sheetBody.scrollTop = top; };
+  const run = async (fn) => { busy = true; err = ''; draw(); try { await fn(); } catch (e) { err = e.message; } busy = false; draw(); };
+  openSheet(body(), (f, act) => {
+    if (act !== 'add') return;
+    const name = (f.pname || '').trim();
+    if (!name) return 'Enter a name.';
+    run(async () => { const out = await people.add(name); list = out.people; fresh = out.person; });
+    return 'Adding…';
+  }, null, (b) => {
+    const d = b.dataset;
+    if (d.fe === 'copy') { (navigator.clipboard ? navigator.clipboard.writeText(d.k) : Promise.reject()).then(() => toast('Key copied'), () => toast('Copy is not available here; select the key and copy it.', true)); return; }
+    if (d.fe === 'rename') { const n = prompt(`New name for ${d.n}`, d.n); if (n && n.trim() && n.trim() !== d.n) run(async () => { list = await people.rename(d.id, n.trim()); if (d.n === conf.user) conf.user = n.trim(); }); return; }
+    if (d.fe === 'remove') { if (confirm(`Remove ${d.n}? Their key stops working at once.`)) run(async () => { list = await people.remove(d.id); if (fresh && fresh.id === d.id) fresh = null; }); }
+  });
+  run(async () => { list = await people.list(); });
 }
 function loadSample() {
   if (rows('PlannerLooms').length) { toast('Looms are already entered. Clear them before loading sample data.', true); return; }
@@ -972,6 +1206,9 @@ document.addEventListener('click', (e) => {
     case 'pd-step': { const cur = S.prodDate && S.prodDate <= S.date ? S.prodDate : C.addDays(S.date, -1); const nx = C.addDays(cur, +b.dataset.v); S.prodDate = nx > S.date ? S.date : nx; render(); return; }
     case 'fab-looms': fabLoomsSheet(b.dataset.f, +b.dataset.p); return;
     case 'fm-open': fabricDetail(id); return;
+    case 'fm-add': fabricEditor(null); return;
+    case 'ym-open': yarnEditor(id); return;
+    case 'ym-add': yarnEditor(null, b.dataset.v); return;
     case 'win': commit([{ tab: 'PlannerSettings', row: { id: 'set_window', key: 'window', value: b.dataset.v }, summary: `Plan window ${b.dataset.v} days` }]); return;
     case 'tpm': S.tpmOnly = b.dataset.v === '1'; render(); return;
     case 'settings': openSettings(); return;

@@ -204,3 +204,33 @@ test('same-day yarn receipt counts in that day\'s stock', () => {
   assert.equal(P.bal.yj.row[0].rcpt, 40);
   assert.equal(P.bal.yj.row[0].close, 50);
 });
+
+test('power off: no yarn and no beam used while off; run-out moves later by the off days', () => {
+  const M = buildMaster(tabs, 'u1');
+  const rate = loomMPerDay(700, 93, 80) * 1.1;
+  const run = { date: '2026-10-21', days: 7 };
+  const on = plan(M, { looms: [prodLoom(60, 3000, '2026-10-21')], production: [] }, run);
+  // off on 22 and 23 Oct, back on 24 Oct
+  const off = plan(M, { looms: [prodLoom(60, 3000, '2026-10-21', { power_off_from: '2026-10-22', power_on_date: '2026-10-24' })], production: [] }, run);
+  const n = Math.floor(3000 / rate);
+  assert.equal(on.looms[0].runCalc, dayNum('2026-10-21') + n);
+  assert.equal(off.looms[0].runCalc, dayNum('2026-10-21') + n + 2);
+  assert.ok(on.days[1].weft.y08 > 0);
+  assert.equal(off.days[1].weft.y08 || 0, 0, 'no weft on an off day');
+  assert.equal(off.days[2].weft.y08 || 0, 0);
+  close(off.days[3].weft.y08, on.days[3].weft.y08, 1e-9, 'back on: full weft again');
+  assert.deepEqual(off.days[1].offLooms, [60]);
+  assert.equal(Object.keys(off.days[1].fab).length, 0, 'not counted as running');
+  assert.equal(off.looms[0].offToday, false);
+});
+
+test('power off with no back-on date: off from that day for the whole window, beam never runs out', () => {
+  const M = buildMaster(tabs, 'u1');
+  const P = plan(M, { looms: [prodLoom(60, 3000, '2026-10-18', { power_off_from: '2026-10-20' })], production: [] }, { date: '2026-10-21', days: 5 });
+  const L = P.looms[0];
+  const rate = loomMPerDay(700, 93, 80) * 1.1;
+  assert.equal(L.runCalc, null);
+  assert.ok(L.offToday && L.offForGood);
+  close(L.balToday, 3000 - rate * 2, 1e-6, 'beam used only on the two days before power off');
+  assert.ok(P.days.every((d) => d.off === 1 && !d.weft.y08));
+});

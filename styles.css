@@ -202,6 +202,17 @@ dialog form > * { flex-shrink: 0; }
 
 /* ---------- laptop: 1024 px and wider (phone layout above is untouched) ---------- */
 .side, .win-txt { display: none; }
+/* master editors: yarn lines, add buttons, people list */
+.fe-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.fe-pick { flex: 1 1 100%; min-width: 0; }
+.fe-n { flex: 1 1 96px; }
+.fe-rm { flex: 0 0 auto; min-height: 38px; }
+.fe-add { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+.btn svg { vertical-align: -2px; }
+.screen-head .btns { gap: 6px; }
+.person, .card.person { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.person .grow { flex: 1 1 140px; min-width: 0; }
+.person code { font-size: 12px; overflow-wrap: anywhere; background: var(--sunk); padding: 2px 6px; border-radius: 6px; }
 @media (min-width: 1024px) {
   :root { --side-w: 252px; }
   body { padding-left: var(--side-w); }
@@ -260,4 +271,5 @@ dialog form > * { flex-shrink: 0; }
   /* narrower cards: let a date-time field drop under its label instead of overflowing */
   .card .inline label:has(> input[type=datetime-local]) { flex: 1 1 100%; flex-wrap: wrap; min-width: 0; }
   .card .inline input[type=datetime-local] { flex: 1 1 170px; min-width: 0; font-size: 14px; }
+  .fe-pick { flex: 1 1 260px; }
 }

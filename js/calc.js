@@ -81,6 +81,9 @@ export function buildMaster(tabs, unitId = UNIT_ID) {
     };
   });
 
+  // a TPM yarn with no count of its own takes its base yarn's denier (as the Fabric Database app does)
+  Object.values(yarns).forEach((y) => { if (y.den == null && y.base && yarns[y.base] && yarns[y.base].den != null) y.den = yarns[y.base].den; });
+
   const assigned = new Set(T('Assignments').filter((a) => a.unit_id === uid).map((a) => a.fabric_id));
   const lines = {};
   T('FabricYarns').forEach((l) => push(lines, l.fabric_id, l));
@@ -99,7 +102,7 @@ export function buildMaster(tabs, unitId = UNIT_ID) {
     fabrics[f.id] = {
       id: f.id, name: titleCase(f.name), rs, ppi: num(f.ppi), dobby: /dobby/i.test(f.weave || ''), weave: /dobby/i.test(f.weave || '') ? 'Dobby' : 'Plain',
       wsh: num(f.warp_shortage_pct) ?? 0, fsh: num(f.weft_shortage_pct) ?? 0,
-      rpm1: num(f.loom_rpm), rpm2: num(f.loom_rpm_dp), warp, weft, note: f.design_note || '',
+      rpm1: num(f.loom_rpm), rpm2: num(f.loom_rpm_dp), warp, weft, note: f.design_note || '', endUse: f.end_use || '', rawWeave: f.weave || '',
       reed: num(f.reed), greige: num(f.greige_width_in),
       label: `${titleCase(f.name)}${rs ? ' ' + Math.round(rs) : ''}`
     };
@@ -209,6 +212,35 @@ export function beamBalance(bal, balanceDate, prods, wshPct) {
   return { cur: b == null ? null : b - used, used, metres, entries, last, start: last != null ? last + 1 : bdate };
 }
 
+// ---------- power off ----------
+
+// A loom switched off from power_off_from until the day before power_on_date (blank = until switched back on).
+// While off it uses no yarn and no beam, so its run-out moves later by the days it stands off.
+export function powerOff(L) {
+  const from = dayNum(L && L.power_off_from);
+  if (from == null) return null;
+  const on = dayNum(L.power_on_date);
+  return { from, on: on != null && on > from ? on : null };
+}
+export const isOff = (po, day) => !!po && day >= po.from && (po.on == null || day < po.on);
+// the day reached after n running days counted from day `start`, skipping days the loom is off;
+// null when the loom is off for good before the beam is used up
+export function runEnd(start, n, po) {
+  if (start == null || n == null) return null;
+  if (!po || n <= 0) return start + Math.max(n, 0);
+  if (po.on == null) return po.from >= start + n ? start + n : null;
+  // an off spell that begins before the beam is used up pushes the end out by its off days from start on
+  if (po.from >= start + n) return start + n;
+  return start + n + Math.max(0, po.on - Math.max(po.from, start));
+}
+// running days between day a (inclusive) and day b (exclusive)
+export const onDays = (a, b, po) => {
+  if (b <= a) return 0;
+  if (!po) return b - a;
+  const offEnd = po.on == null ? b : Math.min(po.on, b);
+  return (b - a) - Math.max(0, offEnd - Math.max(po.from, a));
+};
+
 // ---------- plan ----------
 
 // st: { looms, changeovers, beamStock, yarnStock, receipts, sides, production } as row objects (Planner tabs)
@@ -218,7 +250,7 @@ export function plan(M, st, opts) {
   const lead = opts.lead ?? 1;
   const D0 = dayNum(opts.date);
   const days = [...Array(H)].map((_, d) => ({
-    d, day: D0 + d, weft: {}, warp: {}, warpLooms: {}, runWarp: {}, fab: {}, idle: 0, pend: [], doff: {}, doffSides: {}, arr: {}, rcpt: {}, tpend: []
+    d, day: D0 + d, weft: {}, warp: {}, warpLooms: {}, runWarp: {}, fab: {}, idle: 0, off: 0, offLooms: [], pend: [], doff: {}, doffSides: {}, arr: {}, rcpt: {}, tpend: []
   }));
   const flags = { noRpm: new Set(), noLen: new Set(), noFabric: [] };
 
@@ -256,11 +288,12 @@ export function plan(M, st, opts) {
     const prod = beamBalance(bal, bdate, prodBy[String(num(L.loom_no))], f ? f.wsh : 0);
     const curBal = prod.cur == null ? null : Math.max(0, prod.cur);
     const rate = mday && f ? mday * (1 + f.wsh / 100) : null;
-    const runCalc = f && rate && curBal != null ? prod.start + Math.floor(curBal / rate) : null;
+    const po = powerOff(L);
+    const runCalc = f && rate && curBal != null ? runEnd(prod.start, Math.floor(curBal / rate), po) : null;
     const ovr = dayNum(L.runout_override);
     const runRaw = ovr ?? runCalc;
-    const balToday = curBal != null && rate ? Math.max(0, curBal - rate * Math.max(0, D0 - prod.start)) : curBal;
-    const o = { row: L, no: num(L.loom_no), g, panna, f, rpm, mday, bal, bdate, cur: curBal, prod, overRun: prod.cur != null && prod.cur < 0, balToday, runCalc, ovr, runout: runRaw, overdue: runRaw != null && runRaw < D0, events: [], segs: [] };
+    const balToday = curBal != null && rate ? Math.max(0, curBal - rate * onDays(prod.start, D0, po)) : curBal;
+    const o = { row: L, no: num(L.loom_no), g, panna, f, rpm, mday, bal, bdate, cur: curBal, prod, overRun: prod.cur != null && prod.cur < 0, balToday, runCalc, ovr, runout: runRaw, overdue: runRaw != null && runRaw < D0, events: [], segs: [], po, offToday: isOff(po, D0), offForGood: !!po && po.on == null && po.from <= D0 };
 
     const cos = (coBy[String(o.no)] || []).filter((c) => {
       const cd = dayNum(c.date);
@@ -305,7 +338,7 @@ export function plan(M, st, opts) {
       const nrpm = fabricRpm(nf, panna);
       const nmday = nf ? loomMPerDay(nrpm, M.loomEff, nf.ppi) : null;
       if (nf && !nmday) flags.noRpm.add(nf.id + '|' + panna);
-      const nend = nf && nmday && len ? eday + Math.floor(len / (nmday * (1 + nf.wsh / 100))) : null;
+      const nend = nf && nmday && len ? runEnd(eday, Math.floor(len / (nmday * (1 + nf.wsh / 100))), po) : null;
       cur = { start: eday, end: nend, f: nf, panna, mday: nmday, rpm: nrpm, co };
       o.segs.push(cur);
     }
@@ -316,6 +349,7 @@ export function plan(M, st, opts) {
     // ---- day by day ----
     for (let d = 0; d < H; d++) {
       const day = D0 + d, D = days[d];
+      if (isOff(po, day)) { D.off += 1; D.offLooms.push(o.no); continue; } // switched off: no yarn, no beam
       let used = 0;
       for (const s of o.segs) {
         let share = 0;
