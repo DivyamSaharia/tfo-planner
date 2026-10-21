@@ -187,3 +187,13 @@ test('a TPM yarn with no count takes its base yarn denier', () => {
   t.Yarns.push({ id: 'y_new', name: '60/08 900 TPM', kind: 'tpm', base_yarn_id: 'y_mvdvoz3rmung', count: '', count_unit: 'D', tpm: '900' });
   assert.equal(buildMaster(t).yarns.y_new.den, 60);
 });
+
+test('WhatsApp setup message carries the app link, URL and key', async () => {
+  const { inviteText, whatsappLink, APP_URL } = await import('../js/masters.js');
+  const t = inviteText({ name: 'Ishaan', key: 'abc123' }, 'https://script.google.com/macros/s/X/exec');
+  assert.match(t, /access for Ishaan/);
+  assert.ok(t.includes(APP_URL) && t.includes('abc123') && t.includes('https://script.google.com/macros/s/X/exec'));
+  const l = whatsappLink(t);
+  assert.ok(l.startsWith('https://wa.me/?text=Hanuman%20TFO%20Planner'));
+  assert.equal(decodeURIComponent(l.split('text=')[1]), t);
+});

@@ -274,3 +274,25 @@ export function yarnChanges(tabs, d, unitId = UNIT_ID) {
   }
   return { id, changes: ch };
 }
+
+// ---------- access ----------
+// The setup message the owner sends on WhatsApp when giving someone a key (as the Fabric Database app does).
+export const APP_URL = 'https://divyamsaharia.github.io/tfo-planner/';
+export function inviteText(person, url, appUrl = APP_URL) {
+  return [
+    `Hanuman TFO Planner: access for ${person.name}`,
+    '',
+    '1. Open this link in Safari on iPhone, or Chrome on a laptop:',
+    appUrl,
+    '2. On iPhone: Share, then Add to Home Screen, and open the app from the icon.',
+    '3. Settings opens by itself (or tap the gear). Paste this into Planner key:',
+    '',
+    person.key,
+    '',
+    '4. Check Apps Script URL is this one, then tap Save and reload:',
+    url,
+    '',
+    'Your edits are saved under your name. Keep this key to yourself.'
+  ].join('\n');
+}
+export const whatsappLink = (text) => `https://wa.me/?text=${encodeURIComponent(text)}`;

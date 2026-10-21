@@ -1153,13 +1153,13 @@ function peopleSheet() {
   let list = null, err = '', fresh = null, busy = false;
   const body = () => `<span hidden data-people></span>${sheetHead('People with access')}
     <p class="small">Each person enters their own key in Settings on their phone or laptop. Their edits are saved under their name, in the planner and in the Change log tab. These keys are for the TFO Planner only; the Fabric Database app has its own.</p>
-    ${fresh ? `<div class="note ok"><b>Key for ${esc(fresh.name)}</b><br><span class="person"><code>${esc(fresh.key)}</code><button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(fresh.key)}">Copy</button></span><br><span class="small">Send it to them privately. It is also listed below.</span></div>` : ''}
+    ${fresh ? `<div class="note ok"><b>Key for ${esc(fresh.name)}</b><br><span class="person"><code>${esc(fresh.key)}</code><button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(fresh.key)}">Copy</button></span><div class="btns"><button type="button" class="btn small" data-fe="wa" data-id="${esc(fresh.id)}">Send setup on WhatsApp</button></div><span class="small">The message has the app link, the Apps Script URL and the key. It is also listed below.</span></div>` : ''}
     <div class="fields"><label class="field"><span>Name</span><input type="text" name="pname" autocomplete="off" placeholder="e.g. Ishaan"></label></div>
     <div class="btns"><button class="btn" value="add"${busy ? ' disabled' : ''}>Add person</button></div>
     <p class="err">${esc(err)}</p>
     ${list == null ? '<p class="small">Loading…</p>' : `<div class="list">${list.map((p) => `<div class="card tight person"><span class="grow"><b>${esc(p.name)}</b> <span class="pill${p.role === 'owner' ? ' acc' : ''}">${p.role === 'owner' ? 'Owner' : 'Editor'}</span><span class="small" style="display:block">${p.added_at ? 'Added ' + esc(new Date(p.added_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })) : ''}</span></span>
       <code>${esc(p.key)}</code>
-      <span class="btns"><button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(p.key)}">Copy key</button><button type="button" class="btn quiet small" data-fe="rename" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Rename</button>${p.role === 'owner' ? '' : `<button type="button" class="btn danger small" data-fe="remove" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Remove</button>`}</span></div>`).join('')}</div>`}`;
+      <span class="btns">${p.role === 'owner' ? '' : `<button type="button" class="btn quiet small" data-fe="wa" data-id="${esc(p.id)}">WhatsApp</button><button type="button" class="btn quiet small" data-fe="copymsg" data-id="${esc(p.id)}">Copy setup</button>`}<button type="button" class="btn quiet small" data-fe="copy" data-k="${esc(p.key)}">Copy key</button><button type="button" class="btn quiet small" data-fe="rename" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Rename</button>${p.role === 'owner' ? '' : `<button type="button" class="btn danger small" data-fe="remove" data-id="${esc(p.id)}" data-n="${esc(p.name)}">Remove</button>`}</span></div>`).join('')}</div>`}`;
   const draw = () => { if (!sheet.open || !sheetBody.querySelector('[data-people]')) return; const top = sheetBody.scrollTop; sheetBody.innerHTML = body(); sheetBody.scrollTop = top; };
   const run = async (fn) => { busy = true; err = ''; draw(); try { await fn(); } catch (e) { err = e.message; } busy = false; draw(); };
   openSheet(body(), (f, act) => {
@@ -1170,6 +1170,14 @@ function peopleSheet() {
     return 'Adding…';
   }, null, (b) => {
     const d = b.dataset;
+    if (d.fe === 'wa' || d.fe === 'copymsg') {
+      const p = (list || []).find((x) => x.id === d.id) || (fresh && fresh.id === d.id ? fresh : null);
+      if (!p) return;
+      const text = MS.inviteText(p, conf.url);
+      if (d.fe === 'wa') window.open(MS.whatsappLink(text), '_blank');
+      else (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Setup message copied'), () => toast('Copy is not available here.', true));
+      return;
+    }
     if (d.fe === 'copy') { (navigator.clipboard ? navigator.clipboard.writeText(d.k) : Promise.reject()).then(() => toast('Key copied'), () => toast('Copy is not available here; select the key and copy it.', true)); return; }
     if (d.fe === 'rename') { const n = prompt(`New name for ${d.n}`, d.n); if (n && n.trim() && n.trim() !== d.n) run(async () => { list = await people.rename(d.id, n.trim()); if (d.n === conf.user) conf.user = n.trim(); }); return; }
     if (d.fe === 'remove') { if (confirm(`Remove ${d.n}? Their key stops working at once.`)) run(async () => { list = await people.remove(d.id); if (fresh && fresh.id === d.id) fresh = null; }); }
