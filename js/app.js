@@ -85,9 +85,9 @@ async function flush(quiet) {
   if (!S.err && !quiet) { /* saved */ }
 }
 function syncDot() {
-  const el = $('#sync');
-  el.className = 'sync' + (S.pending || S.loading ? ' busy' : S.err ? ' err' : !conf.key ? ' off' : '');
-  el.title = S.pending ? 'Saving…' : S.loading ? 'Loading…' : S.err ? S.err : !conf.key ? 'No key entered' : 'Saved';
+  const cls = 'sync' + (S.pending || S.loading ? ' busy' : S.err ? ' err' : !conf.key ? ' off' : '');
+  const title = S.pending ? 'Saving…' : S.loading ? 'Loading…' : S.err ? S.err : !conf.key ? 'No key entered' : 'Saved';
+  document.querySelectorAll('.sync').forEach((el) => { el.className = cls; el.title = title; });
 }
 
 async function reloadAll() {
@@ -156,6 +156,9 @@ function render() {
   const badges = tabBadges();
   const sl = $('#tabs').scrollLeft;
   $('#tabs').innerHTML = SCREENS.map(([k, t]) => `<button data-act="tab" data-v="${k}" ${S.tab === k ? 'aria-current="page"' : ''}>${t}${badges[k] ? `<span class="badge">${badges[k]}</span>` : ''}</button>`).join('');
+  $('#side-nav').innerHTML = SCREENS.map(([k, t], i) => `<button data-act="tab" data-v="${k}" ${S.tab === k ? 'aria-current="page"' : ''}><kbd>${(i + 1) % 10}</kbd><span class="lab">${t}</span>${badges[k] ? `<span class="badge">${badges[k]}</span>` : ''}</button>`).join('');
+  $('#side-user').textContent = conf.user || '';
+  $('#win-txt').textContent = winTxt();
   syncDot();
   const fn = { looms: scrLooms, running: scrRunning, changeover: scrChangeover, yarn: scrYarn, beams: scrBeams, ystock: scrYarnStock, receipts: scrReceipts, tfo: scrTfo, stock: scrStock, rpm: scrRpm }[S.tab];
   let banner = '';
@@ -670,7 +673,7 @@ function scrStock() {
   <p class="small">${winTxt()}. Each day shows the closing balance: opening + TFO arrivals + receipts − weft − warp for new beams. Red is a deficit.</p>
   <div class="tw"><table><thead><tr><th>Yarn</th><th>Opening</th>${P.days.map((_, d) => `<th>${dl(d)}</th>`).join('')}<th>Days of cover</th><th>First deficit</th></tr></thead><tbody>
   ${ys.map((y) => { const B = P.bal[y]; return `<tr><td>${esc(yn(y))}${S.tpmOnly ? '' : tpmPill(y)}</td><td>${kg(B.row[0] ? B.row[0].open : 0)}<span class="small">${B.opening ? sd(B.opening.day) : 'no entry'}</span></td>
-    ${B.row.map((c) => `<td class="${c.close < -0.05 ? 'neg' : ''}">${Math.abs(c.close) < 0.05 ? '0' : kg(c.close)}<span class="small">${[c.need && 'need ' + kg(c.need), c.arr && 'TFO ' + kg(c.arr), c.rcpt && 'rcpt ' + kg(c.rcpt)].filter(Boolean).join(' · ')}</span></td>`).join('')}
+    ${B.row.map((c) => `<td class="${c.close < -0.05 ? 'neg' : ''}">${Math.abs(c.close) < 0.05 ? '0' : kg(c.close)}<span class="small">${[c.need && 'need ' + kg(c.need), c.arr && 'TFO ' + kg(c.arr), c.rcpt && 'rcpt ' + kg(c.rcpt)].filter(Boolean).map((x) => `<span class="nb">${x}</span>`).join(' · ')}</span></td>`).join('')}
     <td>${B.cover == null ? '–' : B.cover.toFixed(1)}</td><td>${B.first != null ? `<span class="pill bad">${dl(B.first)}</span><span class="small">short ${kg(B.short)} kg</span>` : B.need ? '<span class="pill ok">Covered</span>' : '<span class="small">no need</span>'}</td></tr>`; }).join('') || `<tr><td colspan="${P.H + 4}">No yarns.</td></tr>`}
   </tbody></table></div>`;
   const sp = Object.entries(P.spindles).filter(([, s]) => s.req > 0.05 || s.sides);
@@ -742,7 +745,7 @@ document.addEventListener('click', (e) => {
   if (!b) return;
   const a = b.dataset.act, id = b.dataset.id;
   switch (a) {
-    case 'tab': S.tab = b.dataset.v; try { history.replaceState(null, '', '#' + S.tab); } catch (err) { /* ignore */ } render(); window.scrollTo(0, 0); return;
+    case 'tab': go(b.dataset.v); return;
     case 'win': commit([{ tab: 'PlannerSettings', row: { id: 'set_window', key: 'window', value: b.dataset.v }, summary: `Plan window ${b.dataset.v} days` }]); return;
     case 'tpm': S.tpmOnly = b.dataset.v === '1'; render(); return;
     case 'settings': openSettings(); return;
@@ -852,6 +855,23 @@ document.addEventListener('change', (e) => {
     if (field === 'yarn_id' && t.value && !r.loaded_at) row.loaded_at = S.date + 'T08:00';
     commit([{ tab: 'PlannerTfoSides', row, summary: `TFO ${r.machine_no}${r.side} ${field === 'yarn_id' ? 'running ' + yn(t.value) : field === 'loaded_at' ? 'loaded ' + t.value.replace('T', ' ') : 'next ' + (t.value ? yn(t.value) : 'nothing')}` }]);
   }
+});
+
+function go(k) {
+  S.tab = k;
+  try { history.replaceState(null, '', '#' + S.tab); } catch (err) { /* ignore */ }
+  render(); window.scrollTo(0, 0);
+}
+
+// Keyboard: Esc closes a dialog; 1-9 and 0 jump to the ten screens when no field has focus.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sheet.open) { e.preventDefault(); closeSheet(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || sheet.open) return;
+  const t = e.target;
+  if (t && (t.isContentEditable || /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName))) return;
+  if (!/^[0-9]$/.test(e.key)) return;
+  const sc = SCREENS[e.key === '0' ? 9 : +e.key - 1];
+  if (sc) { e.preventDefault(); go(sc[0]); }
 });
 
 document.addEventListener('visibilitychange', () => {

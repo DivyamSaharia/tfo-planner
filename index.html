@@ -16,6 +16,11 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<aside class="side" id="side">
+  <div class="side-brand"><img src="icons/icon.svg" alt="" width="34" height="34"><b>TFO Planner&nbsp;· <span>Weavelon 2</span></b></div>
+  <nav class="side-nav" id="side-nav" aria-label="Screens"></nav>
+  <button class="side-set" data-act="settings"><span class="sync" title="Sync status"></span><span class="lab">Settings</span><span class="side-user" id="side-user"></span></button>
+</aside>
 <header class="top">
   <div class="top-row">
     <div class="brand"><img src="icons/icon.svg" alt="" width="30" height="30"><div><b>TFO Planner</b><span>Weavelon 2</span></div></div>
@@ -29,6 +34,7 @@
     <div class="seg" id="win" role="group" aria-label="Plan window">
       <span class="seg-lbl">Days</span><button data-act="win" data-v="3">3</button><button data-act="win" data-v="5">5</button><button data-act="win" data-v="7">7</button>
     </div>
+    <span class="win-txt" id="win-txt"></span>
   </div>
   <nav class="tabs" id="tabs" aria-label="Screens"></nav>
 </header>
