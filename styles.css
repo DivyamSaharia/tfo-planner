@@ -149,14 +149,51 @@ select { appearance: none; -webkit-appearance: none; padding-right: 28px; backgr
 dialog { border: 0; padding: 0; background: transparent; color: var(--ink); max-width: 560px; width: 100%; margin: auto auto 0; max-height: 92vh; }
 dialog::backdrop { background: rgba(0, 0, 0, .45); }
 dialog form { background: var(--bg); border-radius: 18px 18px 0 0; padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); display: flex; flex-direction: column; gap: 12px; max-height: 92vh; overflow-y: auto; }
-@media (min-width: 640px) { dialog { margin: auto; } dialog form { border-radius: 18px; } }
+@media (min-width: 640px) { dialog { margin: auto; } dialog form, .pick-wrap { border-radius: 18px; } }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+dialog form > * { flex-shrink: 0; }
+.kv.nw dd { white-space: nowrap; }
+.speeds { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.speeds b { font-weight: 500; font-variant-numeric: tabular-nums; }
 .err { color: var(--red); font-size: 13.5px; }
 
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 18px); transform: translateX(-50%); background: #1d2a1a; color: #fff; padding: 10px 14px; border-radius: 12px; font-size: 14px; max-width: 92vw; z-index: 50; box-shadow: 0 6px 24px rgba(0, 0, 0, .3); display: flex; gap: 12px; align-items: center; }
 .toast.bad { background: #8c1d16; }
 .toast[hidden] { display: none; }
 .toast button { background: none; border: 1px solid rgba(255, 255, 255, .5); color: #fff; border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+
+[hidden] { display: none !important; }
+
+/* searchable picker (Fabric Database SearchPicker look) */
+.pick-btn { width: 100%; min-width: 0; min-height: 38px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 6px 10px; font-size: 16px; color: var(--ink); display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; cursor: pointer; }
+.pick-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-btn svg { flex: 0 0 auto; color: var(--muted); }
+.pick-btn.empty { color: var(--muted); }
+.pick-btn.need { border-color: var(--red); background: var(--red-soft); }
+.pick-wrap { background: var(--bg); border-radius: 18px 18px 0 0; padding: 16px 16px calc(env(safe-area-inset-bottom) + 12px); display: flex; flex-direction: column; gap: 10px; max-height: 88vh; }
+.search { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 10px; background: var(--sunk); border-radius: 10px; color: var(--muted); }
+.search input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; outline: none; color: var(--ink); padding: 8px 0; }
+.search:focus-within { box-shadow: 0 0 0 2px var(--lime); }
+.search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.page-search { background: var(--surface); border: 1px solid var(--line); }
+.pick-list { overflow-y: auto; max-height: 60vh; min-height: 120px; -webkit-overflow-scrolling: touch; }
+.pick-group { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 10px 4px 4px; }
+.pick-opt { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; width: 100%; text-align: left; border: 0; background: transparent; padding: 11px 8px; font-size: 16px; color: var(--ink); border-radius: 8px; cursor: pointer; }
+.pick-opt:hover, .pick-opt.act { background: var(--sunk); }
+.pick-opt.on { font-weight: 600; color: var(--accent); }
+.pick-opt.muted { color: var(--muted); }
+.pick-note { font-size: 12.5px; color: var(--muted); font-weight: 400; white-space: nowrap; }
+.pick-none { padding: 20px 8px; color: var(--muted); text-align: center; }
+
+/* tab strip separator before the masters; card header buttons */
+.tabs .tab-sep { flex: 0 0 1px; background: rgba(255, 255, 255, .25); margin: 10px 6px; }
+.tap-head { border: 0; background: none; padding: 0; width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.tap-head:hover .title { text-decoration: underline; text-underline-offset: 3px; }
+.looms-btn { align-self: flex-start; text-align: left; white-space: normal; }
+.card.off { opacity: .6; }
+.prod-row { flex-direction: row; align-items: center; justify-content: space-between; }
+.prod-row .grow { flex: 1; min-width: 0; }
+.prod-row input { flex: 0 0 auto; width: 96px; }
 
 @media (min-width: 900px) {
   body { font-size: 15px; }
@@ -186,6 +223,7 @@ dialog form { background: var(--bg); border-radius: 18px 18px 0 0; padding: 16px
   .side-set { border-top: 1px solid rgba(255, 255, 255, .12); border-radius: 0 0 10px 10px; padding-top: 13px; }
   .side-set .sync { margin: 0 2px; flex: 0 0 auto; }
   .side-user { font-size: 12px; color: #8fa284; }
+  .side-head { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #8fa284; font-weight: 600; padding: 14px 10px 4px; border-top: 1px solid rgba(255, 255, 255, .12); margin-top: 8px; }
 
   /* slim bar: plan date and window */
   .top { background: var(--surface); color: var(--ink); border-bottom: 1px solid var(--line); padding: 9px 28px; }
@@ -214,6 +252,9 @@ dialog form { background: var(--bg); border-radius: 18px 18px 0 0; padding: 16px
   /* edit sheets and Settings: centred dialogs */
   dialog { max-width: 620px; margin: auto; left: var(--side-w); }
   dialog form { border-radius: 18px; max-height: 86vh; padding: 20px 22px; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); }
+  .pick-wrap { border-radius: 18px; max-height: 80vh; padding: 20px 22px; box-shadow: 0 18px 60px rgba(0, 0, 0, .35); }
+  .pick-list { max-height: 58vh; }
+  .page-search { max-width: 560px; }
   .toast { left: calc(50% + var(--side-w) / 2); bottom: 22px; }
 
   /* narrower cards: let a date-time field drop under its label instead of overflowing */

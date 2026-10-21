@@ -1,7 +1,7 @@
 // node --test test/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gPerSpindleHour, hoursPerDoff, doffKgPerSide, loomMPerDay, denier, buildMaster, plan, warpKgPerM, weftKgPerM, fits, dayNum, receiptInfo } from '../js/calc.js';
+import { gPerSpindleHour, hoursPerDoff, doffKgPerSide, loomMPerDay, denier, buildMaster, plan, warpKgPerM, weftKgPerM, fits, dayNum, receiptInfo, beamBalance } from '../js/calc.js';
 
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: got ${a}, want ${b} ± ${tol}`);
 
@@ -142,4 +142,65 @@ test('receipts: daily average, indefinite, and fully received', () => {
   assert.equal(r2.done, true);
   const r3 = receiptInfo({ kind: 'yarn', mode: 'oneoff', start_date: '2026-10-23', qty: '300' }, D0);
   assert.equal(r3.on(D0 + 2), 300); assert.equal(r3.on(D0 + 3), 0);
+});
+
+// ---------- beam balance from production ----------
+const prodLoom = (no, bal, date, extra = {}) => ({ loom_no: String(no), loom_group_id: 'g280d', panna: '2', fabric_id: 'fo', beam_balance_m: String(bal), balance_date: date, ...extra });
+
+test('beam balance: loom with no production keeps its entered balance and forecasts from the balance date', () => {
+  const b = beamBalance('3000', '2026-10-18', [], 10);
+  assert.equal(b.cur, 3000); assert.equal(b.last, null); assert.equal(b.entries, 0);
+  assert.equal(b.start, dayNum('2026-10-18'));
+  const M = buildMaster(tabs, 'u1');
+  const rate = loomMPerDay(700, 93, 80) * 1.1;
+  const P = plan(M, { looms: [prodLoom(60, 3000, '2026-10-18')], production: [] }, { date: '2026-10-21', days: 7 });
+  const L = P.looms[0];
+  assert.equal(L.cur, 3000);
+  assert.equal(L.runCalc, dayNum('2026-10-18') + Math.floor(3000 / rate));
+  close(L.balToday, 3000 - rate * 3, 1e-6, 'balance today runs on from the balance date');
+});
+
+test('beam balance: three days of production, metres x (1 + warp shortage), forecast from the day after the last entry', () => {
+  const prods = [
+    { loom_no: '60', date: '2026-10-18', metres: '400' },
+    { loom_no: '60', date: '2026-10-19', metres: '380' },
+    { loom_no: '60', date: '2026-10-20', metres: '0' }
+  ];
+  const b = beamBalance('3000', '2026-10-18', prods, 10);
+  close(b.cur, 3000 - 780 * 1.1, 1e-9, 'current balance');
+  assert.equal(b.last, dayNum('2026-10-20'));
+  assert.equal(b.start, dayNum('2026-10-21'));
+  assert.equal(b.entries, 3);
+  const M = buildMaster(tabs, 'u1');
+  const rate = loomMPerDay(700, 93, 80) * 1.1;
+  const P = plan(M, { looms: [prodLoom(60, 3000, '2026-10-18')], production: prods }, { date: '2026-10-21', days: 7 });
+  const L = P.looms[0];
+  close(L.cur, 3000 - 858, 1e-9, 'plan uses the current balance');
+  assert.equal(L.runCalc, dayNum('2026-10-21') + Math.floor((3000 - 858) / rate));
+  close(L.balToday, 3000 - 858, 1e-9, 'no forecast use before the plan date');
+  // an overridden run-out date still wins
+  const P2 = plan(M, { looms: [prodLoom(60, 3000, '2026-10-18', { runout_override: '2026-10-23' })], production: prods }, { date: '2026-10-21', days: 7 });
+  assert.equal(P2.looms[0].runout, dayNum('2026-10-23'));
+});
+
+test('beam balance: production dated before the balance date is ignored', () => {
+  const prods = [
+    { loom_no: '60', date: '2026-10-16', metres: '500' },
+    { loom_no: '60', date: '2026-10-17', metres: '500' },
+    { loom_no: '61', date: '2026-10-19', metres: '500' }
+  ];
+  const M = buildMaster(tabs, 'u1');
+  const P = plan(M, { looms: [prodLoom(60, 3000, '2026-10-18')], production: prods }, { date: '2026-10-21', days: 7 });
+  const L = P.looms[0];
+  assert.equal(L.cur, 3000);
+  assert.equal(L.prod.last, null);
+  assert.equal(L.prod.start, dayNum('2026-10-18'));
+});
+
+test('same-day yarn receipt counts in that day\'s stock', () => {
+  const M = buildMaster(tabs, 'u1');
+  const P = plan(M, { looms: [], yarnStock: [{ date: '2026-10-21', yarn_id: 'yj', kg: '10' }], receipts: [{ id: 'r1', kind: 'yarn', item: 'yj', mode: 'oneoff', start_date: '2026-10-21', qty: '40' }] }, { date: '2026-10-21', days: 3 });
+  assert.equal(P.recs[0].done, false);
+  assert.equal(P.bal.yj.row[0].rcpt, 40);
+  assert.equal(P.bal.yj.row[0].close, 50);
 });

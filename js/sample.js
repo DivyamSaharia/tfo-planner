@@ -27,7 +27,9 @@ export function makeSample(M, date) {
   const base = { unit_id: uid, updated_at: new Date().toISOString(), updated_by: by };
 
   // ---- looms: days of beam left spread from under 1 day to about 3 weeks ----
-  const looms = [];
+  // Balances were measured three days before the plan date; production since then is entered per loom.
+  const bdate = addDays(date, -3);
+  const looms = [], production = [];
   let no = 1;
   LAYOUT.forEach(([gid, list]) => {
     const g = M.groups[gid];
@@ -37,8 +39,15 @@ export function makeSample(M, date) {
       for (let i = 0; i < n; i++) {
         const mday = loomMPerDay(fabricRpm(f, panna), M.loomEff, f.ppi) || 400;
         const daysLeft = 0.6 + rnd() * 19;
-        const bal = Math.round(daysLeft * mday * (1 + f.wsh / 100) / 10) * 10;
-        looms.push({ ...base, id: 'smp_lm_' + pad(no), loom_no: String(no), loom_group_id: gid, panna: String(panna), fabric_id: fid, beam_balance_m: String(bal), balance_date: date, runout_override: '', notes: S });
+        let used = 0;
+        for (let k = 0; k < 3; k++) {
+          if (no % 11 === 5 && k === 2) continue; // a few looms not entered yet for the last day
+          const m = Math.round(mday * (0.88 + rnd() * 0.16) / 10) * 10;
+          used += m * (1 + f.wsh / 100);
+          production.push({ ...base, id: `smp_pr_${pad(no)}_${k}`, date: addDays(bdate, k), loom_no: String(no), metres: String(m), notes: S });
+        }
+        const bal = Math.round((daysLeft * mday * (1 + f.wsh / 100) + used) / 10) * 10;
+        looms.push({ ...base, id: 'smp_lm_' + pad(no), loom_no: String(no), loom_group_id: gid, panna: String(panna), fabric_id: fid, beam_balance_m: String(bal), balance_date: bdate, runout_override: '', notes: S });
         no++;
       }
     });
@@ -62,7 +71,7 @@ export function makeSample(M, date) {
   ];
 
   // ---- changeovers on looms whose beams run out in the next 7 days ----
-  const P0 = plan(M, { looms, changeovers: [], beamStock, yarnStock: [], receipts, sides: [] }, { date, days: 7, lead: 1 });
+  const P0 = plan(M, { looms, production, changeovers: [], beamStock, yarnStock: [], receipts, sides: [] }, { date, days: 7, lead: 1 });
   const D0 = dayNum(date);
   const soon = P0.looms.filter((l) => l.runout != null && l.runout >= D0 + 1 && l.runout < D0 + 7).sort((a, b) => a.runout - b.runout);
   const pick = (pred) => { const i = soon.findIndex(pred); return i < 0 ? null : soon.splice(i, 1)[0]; };
@@ -76,7 +85,7 @@ export function makeSample(M, date) {
   co(pick((l) => l.row.loom_group_id === G.p190), F.nc67, 'new', 5400, '');
 
   // ---- TFO sides, shared out by weft need ----
-  const P1 = plan(M, { looms, changeovers, beamStock, yarnStock: [], receipts, sides: [] }, { date, days: 7, lead: 1 });
+  const P1 = plan(M, { looms, production, changeovers, beamStock, yarnStock: [], receipts, sides: [] }, { date, days: 7, lead: 1 });
   const tpm = P1.yarnIds.filter((y) => M.yarns[y].isTpm);
   const need = Object.fromEntries(tpm.map((y) => [y, P1.bal[y] ? P1.bal[y].avg : 0]));
   const old = M.typeList.find((t) => !t.isNew), neu = M.typeList.find((t) => t.isNew);
@@ -105,7 +114,7 @@ export function makeSample(M, date) {
   });
 
   // ---- yarn stock for every yarn in use: two to five days of need, a few TPM yarns kept low ----
-  const P2 = plan(M, { looms, changeovers, beamStock, yarnStock: [], receipts, sides }, { date, days: 7, lead: 1 });
+  const P2 = plan(M, { looms, production, changeovers, beamStock, yarnStock: [], receipts, sides }, { date, days: 7, lead: 1 });
   const yarnStock = P2.yarnIds.map((y, i) => {
     const b = P2.bal[y];
     const day = b ? Math.max(b.avg, (b.row[0] && b.row[0].need) || 0) : 0;
@@ -121,6 +130,6 @@ export function makeSample(M, date) {
 
   return {
     PlannerLooms: looms, PlannerChangeovers: changeovers, PlannerBeamStock: beamStock, PlannerYarnStock: yarnStock,
-    PlannerReceipts: receipts, PlannerTfoSides: sides, PlannerSettings: settings
+    PlannerReceipts: receipts, PlannerTfoSides: sides, PlannerSettings: settings, PlannerProduction: production
   };
 }

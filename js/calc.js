@@ -75,7 +75,10 @@ export function buildMaster(tabs, unitId = UNIT_ID) {
 
   const yarns = {};
   T('Yarns').forEach((y) => {
-    yarns[y.id] = { id: y.id, name: y.name, kind: y.kind, isTpm: String(y.kind).toLowerCase() === 'tpm' || num(y.tpm) > 0, den: denier(y), tpm: num(y.tpm), base: y.base_yarn_id || '' };
+    yarns[y.id] = {
+      id: y.id, name: y.name, kind: y.kind, isTpm: String(y.kind).toLowerCase() === 'tpm' || num(y.tpm) > 0, den: denier(y), tpm: num(y.tpm), base: y.base_yarn_id || '',
+      count: num(y.count), unit: String(y.count_unit || 'D').trim() || 'D', twist: y.twist || '', material: y.material || '', filaments: num(y.filaments)
+    };
   });
 
   const assigned = new Set(T('Assignments').filter((a) => a.unit_id === uid).map((a) => a.fabric_id));
@@ -91,12 +94,13 @@ export function buildMaster(tabs, unitId = UNIT_ID) {
     const avg = known.length ? known.reduce((s, p) => s + p, 0) / known.length : 1;
     const filled = parts.map((p) => (p > 0 ? p : avg));
     const tot = filled.reduce((s, p) => s + p, 0) || 1;
-    const weft = wl.map((l, i) => ({ yarn_id: l.yarn_id, share: filled[i] / tot }));
+    const weft = wl.map((l, i) => ({ yarn_id: l.yarn_id, share: filled[i] / tot, parts: parts[i] }));
     const rs = num(f.reed_space_in);
     fabrics[f.id] = {
       id: f.id, name: titleCase(f.name), rs, ppi: num(f.ppi), dobby: /dobby/i.test(f.weave || ''), weave: /dobby/i.test(f.weave || '') ? 'Dobby' : 'Plain',
       wsh: num(f.warp_shortage_pct) ?? 0, fsh: num(f.weft_shortage_pct) ?? 0,
       rpm1: num(f.loom_rpm), rpm2: num(f.loom_rpm_dp), warp, weft, note: f.design_note || '',
+      reed: num(f.reed), greige: num(f.greige_width_in),
       label: `${titleCase(f.name)}${rs ? ' ' + Math.round(rs) : ''}`
     };
   });
@@ -184,9 +188,30 @@ export function tfoSpeed(M, typeId, yarnId) {
   return gph ? { rpm: s.rpm, eff, gph, kgSpindleDay: gph * 24 / 1000 } : null;
 }
 
+// ---------- beam balance from production ----------
+
+// The entered balance is at the start of its balance date. Production dated on or after that date
+// uses metres x (1 + warp shortage); earlier entries are ignored. The forecast starts the day after
+// the last production entry, or on the balance date when there is none.
+// prods: [{ date | day, metres }] for one loom
+export function beamBalance(bal, balanceDate, prods, wshPct) {
+  const bdate = typeof balanceDate === 'number' ? balanceDate : dayNum(balanceDate);
+  const k = 1 + (num(wshPct) || 0) / 100;
+  let used = 0, last = null, entries = 0, metres = 0;
+  (prods || []).forEach((p) => {
+    const d = p.day ?? dayNum(p.date);
+    const m = num(p.metres);
+    if (d == null || m == null || bdate == null || d < bdate) return;
+    used += m * k; metres += m; entries++;
+    if (last == null || d > last) last = d;
+  });
+  const b = num(bal);
+  return { cur: b == null ? null : b - used, used, metres, entries, last, start: last != null ? last + 1 : bdate };
+}
+
 // ---------- plan ----------
 
-// st: { looms, changeovers, beamStock, yarnStock, receipts, sides } as row objects (Planner tabs)
+// st: { looms, changeovers, beamStock, yarnStock, receipts, sides, production } as row objects (Planner tabs)
 // opts: { date: 'YYYY-MM-DD', days: 3|5|7, lead: warping lead time in days }
 export function plan(M, st, opts) {
   const H = opts.days || 7;
@@ -216,8 +241,9 @@ export function plan(M, st, opts) {
   });
 
   // ---- looms ----
-  const coBy = {};
+  const coBy = {}, prodBy = {};
   (st.changeovers || []).forEach((c) => push(coBy, String(num(c.loom_no)), c));
+  (st.production || []).forEach((p) => push(prodBy, String(num(p.loom_no)), p));
   const looms = (st.looms || []).slice().sort((a, b) => num(a.loom_no) - num(b.loom_no)).map((L) => {
     const g = M.groups[L.loom_group_id];
     const panna = num(L.panna) || defPanna(g);
@@ -227,12 +253,14 @@ export function plan(M, st, opts) {
     if (f && !mday) flags.noRpm.add(f.id + '|' + panna);
     const bal = num(L.beam_balance_m);
     const bdate = dayNum(L.balance_date) ?? D0;
+    const prod = beamBalance(bal, bdate, prodBy[String(num(L.loom_no))], f ? f.wsh : 0);
+    const curBal = prod.cur == null ? null : Math.max(0, prod.cur);
     const rate = mday && f ? mday * (1 + f.wsh / 100) : null;
-    const runCalc = f && rate && bal != null ? bdate + Math.floor(bal / rate) : null;
+    const runCalc = f && rate && curBal != null ? prod.start + Math.floor(curBal / rate) : null;
     const ovr = dayNum(L.runout_override);
     const runRaw = ovr ?? runCalc;
-    const balToday = bal != null && rate ? Math.max(0, bal - rate * Math.max(0, D0 - bdate)) : bal;
-    const o = { row: L, no: num(L.loom_no), g, panna, f, rpm, mday, bal, bdate, balToday, runCalc, ovr, runout: runRaw, overdue: runRaw != null && runRaw < D0, events: [], segs: [] };
+    const balToday = curBal != null && rate ? Math.max(0, curBal - rate * Math.max(0, D0 - prod.start)) : curBal;
+    const o = { row: L, no: num(L.loom_no), g, panna, f, rpm, mday, bal, bdate, cur: curBal, prod, overRun: prod.cur != null && prod.cur < 0, balToday, runCalc, ovr, runout: runRaw, overdue: runRaw != null && runRaw < D0, events: [], segs: [] };
 
     const cos = (coBy[String(o.no)] || []).filter((c) => {
       const cd = dayNum(c.date);
@@ -299,8 +327,9 @@ export function plan(M, st, opts) {
         used += share;
         if (!s.f) { D.idle += share; continue; }
         const k = s.f.id + '|' + s.panna;
-        const fr = D.fab[k] || (D.fab[k] = { f: s.f, panna: s.panna, rpm: s.rpm, mday: s.mday, looms: 0, plain: 0, dobby: 0, weft: {}, warp: {} });
+        const fr = D.fab[k] || (D.fab[k] = { f: s.f, panna: s.panna, rpm: s.rpm, mday: s.mday, looms: 0, plain: 0, dobby: 0, weft: {}, warp: {}, list: [] });
         fr.looms += share;
+        fr.list.push({ no: o.no, id: L.id, share });
         if (g && g.dobby) fr.dobby += share; else fr.plain += share;
         if (!s.mday) continue;
         weftKgPerM(M, s.f, s.panna).forEach((w) => { const v = share * s.mday * w.kg; add(D.weft, w.yarn_id, v); add(fr.weft, w.yarn_id, v); });
