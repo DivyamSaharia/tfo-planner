@@ -1,0 +1,15 @@
+{
+  "name": "TFO Planner",
+  "short_name": "TFO Planner",
+  "description": "Day-by-day yarn and TFO planning for Hanuman Weavelon Unit 2",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f0",
+  "theme_color": "#002A00",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
